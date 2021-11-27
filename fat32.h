@@ -8,6 +8,8 @@
 #define BS_VolLab_LENGTH 11
 #define BS_FilSysType_LENGTH 8 
 
+#define BUFFER_SIZE 32
+
 #pragma pack(push)
 #pragma pack(1)
 struct fat32BS_struct {
@@ -56,6 +58,7 @@ typedef struct fat32BS_struct fat32BS;
 #pragma pack(1)
 struct fat32Head {
 //TODO
+	fat32BS *bs;
 };
 #pragma pack(pop)
 typedef struct fat32Head fat32Head;
