@@ -8,7 +8,7 @@
 #define BS_VolLab_LENGTH 11
 #define BS_FilSysType_LENGTH 8 
 
-#define BUFFER_SIZE 32
+#define BUFFER_SIZE 512
 
 #pragma pack(push)
 #pragma pack(1)
@@ -48,22 +48,61 @@ struct fat32BS_struct {
 	uint8_t BS_SigB;
 };
 #pragma pack(pop)
-
 typedef struct fat32BS_struct fat32BS;
 
-//TODO: YOU WILL NEED TO MAKE MORE STRUCTS
-//for each struct you make, it's IMPORTANT to surround them
-//with the #pragmas you see above like:
+#pragma pack(push)
+#pragma pack(1)
+struct fsi_struct {
+	uint32_t FSI_LeadSig;
+	char FSI_Reserved1[480];
+	uint32_t FSI_StrucSig;
+	uint32_t FSI_Free_Count;
+	uint32_t FSI_Nxt_Free;
+	char FSI_Reserved2[12];
+	uint32_t FSI_TrailSig;
+};
+#pragma pack(pop)
+typedef struct fsi_struct FSI;
+
+#pragma pack(push)
+#pragma pack(1)
+struct dir_struct {
+	char DIR_Name[11];
+	uint8_t DIR_Attr;
+	uint8_t DIR_NTRes;
+	uint8_t DIR_CrtTimeTenth;
+	uint16_t DIR_CrtTime;
+	uint16_t DIR_CrtDate;
+	uint16_t DIR_LstAccDate;
+	uint16_t DIR_FstClusHI;
+	uint16_t DIR_WrtTime;
+	uint16_t DIR_WrtDate;
+	uint16_t DIR_FstClusLO;
+    uint32_t DIR_FileSize;
+};
+#pragma pack(pop)
+typedef struct dir_struct fat32Dir;
+
+
+
+
 #pragma pack(push)
 #pragma pack(1)
 struct fat32Head {
-//TODO
+	//TODO
 	fat32BS *bs;
+	FSI *fsi;
+	fat32Dir *dir;
 };
 #pragma pack(pop)
 typedef struct fat32Head fat32Head;
 
 
 fat32Head *createHead(int fd);
+int checkIfFAT32(fat32Head* h);
+void loadFSI(int fd, fat32Head* h);
+void loadRootDir(int fd, fat32Head* h, int FirstDataSector);
+int findFirstDataSectorOfClusterN(fat32Head* h, int N, int FirstDataSector);
+uint32_t getFATEntryForClusterN(int fd, int N, fat32Head* h);
 
 #endif
