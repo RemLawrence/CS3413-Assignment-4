@@ -53,7 +53,7 @@ void loadRootDir(int fd, fat32Head* h, int FirstDataSector) {
 /* return the sector # of cluster N */
 int findFirstDataSectorOfClusterN(fat32Head* h, int N, int FirstDataSector) {
     //printf("%d", FirstDataSector + (N-2)*h->bs->BPB_SecPerClus);
-    return FirstDataSector + (N-2)*h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus;
+    return FirstDataSector + (N-2)*h->bs->BPB_SecPerClus;
 }
 
 /*  A helper function that given a valid cluster number, 

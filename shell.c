@@ -81,7 +81,7 @@ void printInfo(fat32Head* h) {
 void doDir(int fd, fat32Head* h, int curDirClus) {
 	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs * h->bs->BPB_FATSz32; // 1922+15423*2=32768
 	int currentSector = findFirstDataSectorOfClusterN(h, curDirClus, FirstDataSector);
-	
+
 	// cluster[4096/32] = cluster[128] = 128 dir entries to go through in each cluster
 	int dirEntryNum = h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus/sizeof(fat32Dir);
 	unsigned char *cluster[dirEntryNum];
@@ -119,15 +119,15 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 				//dir
 				nameNoSpace[j-1] = '\0';
 				printf("<%s>\t\t%d\n", nameNoSpace, dir->DIR_FileSize);
-				printf("DIR_FstClusHI: %d\n",  dir->DIR_FstClusHI);
-				printf("DIR_FstClusLO: %d\n",  dir->DIR_FstClusLO);
+				// printf("DIR_FstClusHI: %d\n",  dir->DIR_FstClusHI);
+				// printf("DIR_FstClusLO: %d\n",  dir->DIR_FstClusLO);
 			}
 			else {
 				//archieve
 				nameNoSpace[j] = '\0';
 				printf("%s\t\t%d\n", nameNoSpace, dir->DIR_FileSize);
-				printf("DIR_FstClusHI: %d\n",  dir->DIR_FstClusHI);
-				printf("DIR_FstClusLO: %d\n",  dir->DIR_FstClusLO);
+				// printf("DIR_FstClusHI: %d\n",  dir->DIR_FstClusHI);
+				// printf("DIR_FstClusLO: %d\n",  dir->DIR_FstClusLO);
 			}
 		}
 
@@ -139,7 +139,7 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 	if(FATContent > 0x0FFFFFF8) {
 		/* EOC = TRUE */
 		//printf("curDirClus: %X\n", curDirClus);
-		printf("FATContent: %X\n", FATContent);
+		//printf("FATContent: %X\n", FATContent);
 	}
 	else {
 		/* Recursively call doDir with the next cluster # */
@@ -151,6 +151,71 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 	uint64_t bytesFree = (uint64_t)h->fsi->FSI_Free_Count*(uint64_t)h->bs->BPB_BytesPerSec*(uint64_t)h->bs->BPB_SecPerClus;
 	printf("---Bytes Free: %lu\n", bytesFree);
 	printf("---DONE\n");
+}
+
+uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
+	/* Initialize folderName from buffer */
+	char folderName[BUF_SIZE];
+	int i = 0;
+	while(buffer[i] != ' ') {
+		i++;
+	}
+	int j = 0;
+	i++; // Skip that space
+	while(buffer[i] != '\0') {
+		folderName[j] = buffer[i];
+		i++;
+		j++;
+	}
+	folderName[j] = '\0';
+	
+	uint32_t updatedCluster = curDirClus;
+	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs * h->bs->BPB_FATSz32; // 1922+15423*2=32768
+	int currentSector = findFirstDataSectorOfClusterN(h, curDirClus, FirstDataSector);
+
+	if(curDirClus != 2 && strcmp(folderName, "..") == 0) {
+		return 2;
+	}
+
+	// cluster[4096/32] = cluster[128] = 128 dir entries to go through in each cluster
+	int dirEntryNum = h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus/sizeof(fat32Dir);
+	unsigned char *cluster[dirEntryNum];
+	int dirIndex = 0; //  0-127
+	// For each dir entry (32B) in the cluster (128 in total)
+	for(dirIndex = 0; dirIndex < dirEntryNum; dirIndex++) {
+		lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		memcpy(dir, cluster[dirEntryNum],  sizeof(fat32Dir)); // Forgive me, I didn't use casting
+
+		/* If we got an archieve, append dot to its name */
+		if(dir->DIR_Attr == 0x10) {
+			char nameNoSpace[12];
+			int i;
+			int j = 0;
+
+			for (i = 0; i < strlen(dir->DIR_Name); i++) {
+				if (dir->DIR_Name[i] != ' ') {
+					nameNoSpace[j] = dir->DIR_Name[i];
+					j++;
+				}
+			}
+			nameNoSpace[j-1] = '\0';
+
+			if(strcmp(nameNoSpace, folderName) == 0) {
+				updatedCluster = (dir->DIR_FstClusHI<<16) + dir->DIR_FstClusLO;
+				free(cluster[dirEntryNum]);
+				free(dir);
+				return updatedCluster;
+			}
+		}
+
+		free(cluster[dirEntryNum]);
+		free(dir);
+	}
+	printf("Error: folder not found\n");
+	return curDirClus;
 }
 
 void shellLoop(int fd) 
@@ -226,8 +291,15 @@ void shellLoop(int fd)
 			doDir(fd, h, curDirClus);
 		}
 		else if (strncmp(buffer, CMD_CD, strlen(CMD_CD)) == 0) {
-			curDirClus = 5;
-			//curDirClus = doCD(h, curDirClus, buffer);
+			if(strcmp(buffer, "CD") == 0){
+				printf("Error: folder not found\n");
+			}
+			else if (strcmp(buffer, "CD ") == 0) {
+				printf("Error: folder not found\n");
+			}
+			else {
+				curDirClus = doCD(fd, h, curDirClus, buffer);
+			}
 		}
 		else if (strncmp(buffer, CMD_GET, strlen(CMD_GET)) == 0) {
 			//doDownload(h, curDirClus, buffer);
