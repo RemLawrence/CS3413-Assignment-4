@@ -8,6 +8,7 @@
 
 unsigned char *buffer;
 
+/* Initialize FAT32's head struct, load in BPB */
 fat32Head* createHead(int fd) {
     buffer = malloc(BUFFER_SIZE);
     fat32Head* h = (fat32Head*)(malloc(sizeof(fat32Head)));
@@ -25,6 +26,7 @@ fat32Head* createHead(int fd) {
     return h;
 }
 
+/* Return the total cluster number in the volume */
 int checkIfFAT32(fat32Head* h) {
     int TotalDataSec = h->bs->BPB_TotSec32 - (h->bs->BPB_RsvdSecCnt + (h->bs->BPB_NumFATs*h->bs->BPB_FATSz32)+0);
     return TotalDataSec/h->bs->BPB_SecPerClus; // CountofClusters
@@ -41,10 +43,13 @@ void loadFSI(int fd, fat32Head* h) {
     h->fsi = fsi;
 }
 
+/* Load in the root directory struct into the head,
+    from the first sector of Cluster 2 */
 void loadRootDir(int fd, fat32Head* h, int FirstDataSector) {
     // First, skip reserved area + 2*FAT in bytes
     lseek(fd, FirstDataSector*h->bs->BPB_BytesPerSec, SEEK_SET);
     fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+    /* read 32 bytes */
     read(fd, buffer, sizeof(fat32Dir));
     memcpy(dir, buffer,  sizeof(fat32Dir));
     h->dir = dir;

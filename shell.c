@@ -147,10 +147,6 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 		printf("FATContent: %X\n", FATContent);
 		doDir(fd, h, (int)FATContent);
 	}
-
-	uint64_t bytesFree = (uint64_t)h->fsi->FSI_Free_Count*(uint64_t)h->bs->BPB_BytesPerSec*(uint64_t)h->bs->BPB_SecPerClus;
-	printf("---Bytes Free: %lu\n", bytesFree);
-	printf("---DONE\n");
 }
 
 uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
@@ -289,6 +285,9 @@ void shellLoop(int fd)
 			printf("\nDIRECTORY LISTING\n");
 			printf("VOL_ID: %s\n\n", h->dir->DIR_Name);
 			doDir(fd, h, curDirClus);
+			uint64_t bytesFree = (uint64_t)h->fsi->FSI_Free_Count*(uint64_t)h->bs->BPB_BytesPerSec*(uint64_t)h->bs->BPB_SecPerClus;
+			printf("---Bytes Free: %lu\n", bytesFree);
+			printf("---DONE\n");
 		}
 		else if (strncmp(buffer, CMD_CD, strlen(CMD_CD)) == 0) {
 			if(strcmp(buffer, "CD") == 0){
