@@ -2,6 +2,7 @@
 #define FAT32_H
 
 #include <inttypes.h>
+#include <stdbool.h>
 
 /* boot sector constants */
 #define BS_OEMName_LENGTH 8
@@ -104,5 +105,6 @@ void loadFSI(int fd, fat32Head* h);
 void loadRootDir(int fd, fat32Head* h, int FirstDataSector);
 int findFirstDataSectorOfClusterN(fat32Head* h, int N, int FirstDataSector);
 uint32_t getFATEntryForClusterN(int fd, int N, fat32Head* h);
+bool checkFATSig(int fd, fat32Head *h);
 
 #endif

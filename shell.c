@@ -23,6 +23,7 @@
 #define BYTE_TO_MB 1000000
 #define MB_TO_GB 1000
 
+void cleanupHead(fat32Head *h);
 
 void printInfo(fat32Head* h) {
 	// Check if both Sz16 fields are equal to 0
@@ -88,9 +89,15 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 	int dirIndex = 0; //  0-127
 	// For each dir entry (32B) in the cluster (128 in total)
 	for(dirIndex = 0; dirIndex < dirEntryNum; dirIndex++) {
-		lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		int seek = lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
 		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
-		read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		if(readd == -1) {
+        	perror("Read failed.\n");
+    	}
 		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
 		memcpy(dir, cluster[dirEntryNum],  sizeof(fat32Dir)); // Forgive me, I didn't use casting
 
@@ -119,15 +126,11 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 				//dir
 				nameNoSpace[j-1] = '\0';
 				printf("<%s>\t\t%d\n", nameNoSpace, dir->DIR_FileSize);
-				// printf("DIR_FstClusHI: %d\n",  dir->DIR_FstClusHI);
-				// printf("DIR_FstClusLO: %d\n",  dir->DIR_FstClusLO);
 			}
 			else {
 				//archieve
 				nameNoSpace[j] = '\0';
 				printf("%s\t\t%d\n", nameNoSpace, dir->DIR_FileSize);
-				// printf("DIR_FstClusHI: %d\n",  dir->DIR_FstClusHI);
-				// printf("DIR_FstClusLO: %d\n",  dir->DIR_FstClusLO);
 			}
 		}
 
@@ -138,19 +141,12 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 	/* Check if FAT entry of this cluster contains EOC */
 	if(FATContent > 0x0FFFFFF8) {
 		/* EOC = TRUE */
-		//printf("curDirClus: %X\n", curDirClus);
-		//printf("FATContent: %X\n", FATContent);
 	}
 	else {
 		/* Recursively call doDir with the next cluster # */
-		//printf("curDirClus: %X\n", curDirClus);
 		printf("FATContent: %X\n", FATContent);
 		doDir(fd, h, (int)FATContent);
 	}
-
-	uint64_t bytesFree = (uint64_t)h->fsi->FSI_Free_Count*(uint64_t)h->bs->BPB_BytesPerSec*(uint64_t)h->bs->BPB_SecPerClus;
-	printf("---Bytes Free: %lu\n", bytesFree);
-	printf("---DONE\n");
 }
 
 uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
@@ -183,13 +179,18 @@ uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
 	int dirIndex = 0; //  0-127
 	// For each dir entry (32B) in the cluster (128 in total)
 	for(dirIndex = 0; dirIndex < dirEntryNum; dirIndex++) {
-		lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		int seek = lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
 		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
-		read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		if(readd == -1) {
+        	perror("Read failed.\n");
+    	}
 		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
-		memcpy(dir, cluster[dirEntryNum],  sizeof(fat32Dir)); // Forgive me, I didn't use casting
+		memcpy(dir, cluster[dirEntryNum], sizeof(fat32Dir)); // Forgive me, I didn't use casting
 
-		/* If we got an archieve, append dot to its name */
 		if(dir->DIR_Attr == 0x10) {
 			char nameNoSpace[12];
 			int i;
@@ -203,6 +204,7 @@ uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
 			}
 			nameNoSpace[j-1] = '\0';
 
+			/* folderName matches */
 			if(strcmp(nameNoSpace, folderName) == 0) {
 				updatedCluster = (dir->DIR_FstClusHI<<16) + dir->DIR_FstClusLO;
 				free(cluster[dirEntryNum]);
@@ -218,18 +220,129 @@ uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
 	return curDirClus;
 }
 
+void doDownload(int fd, fat32Head* h, int curDirClus, char *buffer) {
+	int nextClus = 0;
+	int fileSize = 0;
+	bool found = false;
+	/* Initialize folderName from buffer */
+	char fileName[BUF_SIZE];
+	int i = 0;
+	while(buffer[i] != ' ') {
+		i++;
+	}
+	int j = 0;
+	i++; // Skip that space
+	while(buffer[i] != '\0') {
+		fileName[j] = buffer[i];
+		i++;
+		j++;
+	}
+	fileName[j] = '\0';
+
+	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs *h->bs->BPB_FATSz32; // 1922+15423*2=32768
+	int currentSector = findFirstDataSectorOfClusterN(h, curDirClus, FirstDataSector);
+
+	// cluster[4096/32] = cluster[128] = 128 dir entries to go through in each cluster
+	int dirEntryNum = h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus/sizeof(fat32Dir);
+	unsigned char *cluster[dirEntryNum];
+	int dirIndex = 0; //  0-127
+	// For each dir entry (32B) in the cluster (128 in total)
+	for(dirIndex = 0; dirIndex < dirEntryNum; dirIndex++) {
+		int seek = lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
+		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		if(readd == -1) {
+        	perror("Read failed.\n");
+    	}
+		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		memcpy(dir, cluster[dirEntryNum], sizeof(fat32Dir)); // Forgive me, I didn't use casting
+
+		/* If the entry represents a file */
+		/* If we got an archieve, append dot to its name */
+		if(dir->DIR_Attr == 0x20) {
+			int nameIndex = 0;
+			while(dir->DIR_Name[nameIndex] != ' ') {
+				nameIndex++;
+			}
+			dir->DIR_Name[nameIndex] = '.';
+
+			char nameNoSpace[12];
+			int i;
+			int j = 0;
+
+			for (i = 0; i < strlen(dir->DIR_Name); i++) {
+				if (dir->DIR_Name[i] != ' ') {
+					nameNoSpace[j] = dir->DIR_Name[i];
+					j++;
+				}
+			}
+			nameNoSpace[j] = '\0';
+			if(strcmp(nameNoSpace, fileName) == 0) {
+				nextClus = (dir->DIR_FstClusHI<<16) + dir->DIR_FstClusLO;
+				fileSize = dir->DIR_FileSize; // Store the fileSize here for later use (read & write!)
+				found = true;
+				break;
+			}
+		}
+		free(cluster[dirEntryNum]);
+		free(dir);
+	}
+
+	/* If the file name searched is found, then find all its clusters by reading the FAT entries */
+	if(found) {
+		/* Read each cluster until EOC */
+		uint32_t totalBytes = 0; //DIR_FileSize
+		uint32_t sector = findFirstDataSectorOfClusterN(h, nextClus, FirstDataSector);
+		while(getFATEntryForClusterN(fd, nextClus, h) != 0x0FFFFFFF) {
+			totalBytes += h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus;
+			nextClus = getFATEntryForClusterN(fd, nextClus, h);
+		}
+		/* This operation adds the last cluster size to the totalBytes */
+		totalBytes += h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus;
+		char* buffer = malloc(totalBytes);
+		/* Seek to the first sector of the first cluster the file begins with */
+		int seek = lseek(fd, sector*h->bs->BPB_BytesPerSec, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
+		if(totalBytes >= fileSize) {
+			/* Bonus 2: Just 1 read! */
+			int readd = read(fd, buffer, fileSize);
+			if(readd == -1) {
+        		perror("Read failed.\n");
+    		}
+			int new_file = open(fileName, O_WRONLY | O_APPEND | O_CREAT | O_EXCL, 0777);
+			if(new_file < 0) {
+				printf("Failed to create file '%s'\n", fileName);
+			}
+			write(new_file, buffer, fileSize);
+			printf("Done.\n");
+		}
+		else {
+			printf("There's some error reading the file '%s'\n", fileName);
+		}
+		free(buffer);
+	}
+	else {
+		printf("Error: file not found\n");
+	}
+}
+
 void shellLoop(int fd) 
 {
 	int running = true;
 	uint32_t curDirClus;
 
-	// Initialize fat32Head
+	// Step 1: Initialize fat32Head
 	fat32Head *h = createHead(fd);
 
 	if (h == NULL) {
 		running = false;
 	}
-	else {// valid, grab the root cluster	
+	else {// valid, grab the root cluster
 		;//TODO
 		// Grab the root cluster
 		curDirClus = h->bs->BPB_RootClus; // 2
@@ -240,15 +353,15 @@ void shellLoop(int fd)
 	int CountofClusters; // Clusters in total
 	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs * h->bs->BPB_FATSz32; // 1922+15423*2=32768
 
-	/* Check if the total count of clusters (start from Cluster 2) 
+	/* Step 2: Check if the total count of clusters (start from Cluster 2) 
 		falls in the range of FAT32 */
 	CountofClusters = checkIfFAT32(h);
-	if(CountofClusters < 4085) {
+	if(CountofClusters < FAT12_TOTAL_CLUSTERS) {
 		/* Volume is FAT12 */
 		printf("Volume is FAT12\n");
 		running = false;
 	}
-	else if (CountofClusters < 65525) {
+	else if (CountofClusters < FAT16_TOTAL_CLUSTERS) {
 		/* Volume is FAT16 */
 		printf("Volume is FAT16\n");
 		running = false;
@@ -257,12 +370,19 @@ void shellLoop(int fd)
 		/* Volume is FAT32 */
 	}
 
-	/* Load FSI */
+	/* Step 3: Check FAT signature */
+	if(!checkFATSig(fd, h)) {
+		printf("The FAT has incorrect signatures. Exiting now...\n");
+		running = false;
+	}
+
+	/* Step 4: Load FSI and check its signature entries */
 	loadFSI(fd, h);
 	if(h->fsi->FSI_LeadSig == 0x41615252 && h->fsi->FSI_StrucSig == 0x61417272 && h->fsi->FSI_TrailSig == 0xAA550000) {
 		/* Check if all FSInfo's signatures are correct. */
 	}
 	else {
+		printf("AT least one FSInfo signature is incorrect! Exiting...\n");
 		running = false;
 	}
 
@@ -289,6 +409,9 @@ void shellLoop(int fd)
 			printf("\nDIRECTORY LISTING\n");
 			printf("VOL_ID: %s\n\n", h->dir->DIR_Name);
 			doDir(fd, h, curDirClus);
+			uint64_t bytesFree = (uint64_t)h->fsi->FSI_Free_Count*(uint64_t)h->bs->BPB_BytesPerSec*(uint64_t)h->bs->BPB_SecPerClus;
+			printf("---Bytes Free: %lu\n", bytesFree);
+			printf("---DONE\n");
 		}
 		else if (strncmp(buffer, CMD_CD, strlen(CMD_CD)) == 0) {
 			if(strcmp(buffer, "CD") == 0){
@@ -302,7 +425,16 @@ void shellLoop(int fd)
 			}
 		}
 		else if (strncmp(buffer, CMD_GET, strlen(CMD_GET)) == 0) {
-			//doDownload(h, curDirClus, buffer);
+			printf("\n");
+			if(strcmp(buffer, "GET") == 0) {
+				printf("Error: file not found\n");
+			}
+			else if (strcmp(buffer, "GET ") == 0) {
+				printf("Error: file not found\n");
+			}
+			else {
+				doDownload(fd, h, curDirClus, buffer);
+			}
 		}
 		else if (strncmp(buffer, CMD_PUT, strlen(CMD_PUT)) == 0) {
 			//doUpload(h, curDirClus, buffer, bufferRaw);
@@ -314,5 +446,10 @@ void shellLoop(int fd)
 	}
 	printf("\nExited...\n");
 	
-	//cleanupHead(h);
+	cleanupHead(h);
+}
+
+void cleanupHead(fat32Head *h) {
+	free(h->bs);
+	free(h);
 }
