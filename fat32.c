@@ -9,6 +9,7 @@
 
 unsigned char *buffer;
 
+/* Initialize FAT32's head struct, load in BPB */
 fat32Head* createHead(int fd) {
     buffer = malloc(BUFFER_SIZE);
     fat32Head* h = (fat32Head*)(malloc(sizeof(fat32Head)));
@@ -26,6 +27,7 @@ fat32Head* createHead(int fd) {
     return h;
 }
 
+/* Return the total cluster number in the volume */
 int checkIfFAT32(fat32Head* h) {
     int TotalDataSec = h->bs->BPB_TotSec32 - (h->bs->BPB_RsvdSecCnt + (h->bs->BPB_NumFATs*h->bs->BPB_FATSz32)+0);
     return TotalDataSec/h->bs->BPB_SecPerClus; // CountofClusters
