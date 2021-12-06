@@ -1,3 +1,13 @@
+/* The shell for reading FAT32 Disk Volume.
+* Commands provided:
+* INFO: Display the stats of the disk image you're reading
+* DIR: Display the info of the current folder you're at. 
+* CD: Goes into a new directory if that directory exists.
+* GET: Get a specific file from the current directory to your local directory.
+* Press Ctrl+D to exit.
+* Author: Micah Hanmin Wang #3631308
+*/
+
 #define _FILE_OFFSET_BITS 64
 
 #include <stdio.h>
@@ -23,22 +33,36 @@
 #define BYTE_TO_MB 1000000
 #define MB_TO_GB 1000
 
+#define BPB_END_SIG1 0x55
+#define BPB_END_SIG2 0xAA
+#define FIXED_MEDIA 0xF8
+#define NOT_FIXED_MEDIA 0xF0
+#define ATTR_VOLUME_ID 0x08
+#define ATTR_DIRECTORY 0x10
+#define ATTR_ARCHIEVE 0x20
+#define END_OF_CLUSTER 0x0FFFFFF8
+#define END_OF_CLUSTER_CHAIN 0x0FFFFFFF
+#define FSInfo_LeadSig 0x41615252
+#define FSInfo_StrucSig 0x61417272
+#define FSInfo_TrailSig 0xAA550000
+#define DIR_NAME_LENGTH 11
+
 void cleanupHead(fat32Head *h);
 
 void printInfo(fat32Head* h) {
 	// Check if both Sz16 fields are equal to 0
 	if(h->bs->BPB_FATSz16 == 0 && h->bs-> BPB_TotSec16 == 0) {
 		// Then check the two signature bytes (0x55 0xAA), this tells you if you load it correctly.
-		if(h->bs->BS_SigA == 0x55 && h->bs->BS_SigB == 0xAA) {
+		if(h->bs->BS_SigA == BPB_END_SIG1 && h->bs->BS_SigB == BPB_END_SIG2) {
 			printf("---- Device Info ----\n");
 			printf("OEM Name: %s\n", h->bs->BS_OEMName);
 			printf("Label: %*.*s\n", BS_VolLab_LENGTH, BS_VolLab_LENGTH, h->bs->BS_VolLab);
 			printf("File System Type: %*.*s\n", BS_FilSysType_LENGTH, BS_FilSysType_LENGTH, h->bs->BS_FilSysType);
 			printf("Media Type: 0x%X ", h->bs->BPB_Media);
-			if(h->bs->BPB_Media == 0xF8) {
+			if(h->bs->BPB_Media == FIXED_MEDIA) {
 				printf("(fixed)\n");
 			}
-			else if(h->bs->BPB_Media == 0xF0) {
+			else if(h->bs->BPB_Media == NOT_FIXED_MEDIA) {
 				printf("not fixed\n");
 			}
 			else {
@@ -94,15 +118,23 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
         	perror("Seek failed.\n");
     	}
 		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		if(cluster[dirEntryNum] == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
 		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
 		if(readd == -1) {
         	perror("Read failed.\n");
     	}
 		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		if(dir == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
 		memcpy(dir, cluster[dirEntryNum],  sizeof(fat32Dir)); // Forgive me, I didn't use casting
 
 		/* If we got an archieve, append dot to its name */
-		if(dir->DIR_Attr == 0x20) {
+		if(dir->DIR_Attr == ATTR_ARCHIEVE) {
 			int nameIndex = 0;
 			while(dir->DIR_Name[nameIndex] != ' ') {
 				nameIndex++;
@@ -111,8 +143,8 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 		}
 
 		/* If we got a directory or an archieve, remove all spaces from its name and print its info */
-		if(dir->DIR_Attr == 0x10 || dir->DIR_Attr == 0x20) {
-			char nameNoSpace[12];
+		if(dir->DIR_Attr == ATTR_DIRECTORY || dir->DIR_Attr == ATTR_ARCHIEVE) {
+			char nameNoSpace[DIR_NAME_LENGTH+1];
 			int i;
 			int j = 0;
 
@@ -122,7 +154,7 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 					j++;
 				}
 			}
-			if(dir->DIR_Attr == 0x10) {
+			if(dir->DIR_Attr == ATTR_DIRECTORY) {
 				//dir
 				nameNoSpace[j-1] = '\0';
 				printf("<%s>\t\t%d\n", nameNoSpace, dir->DIR_FileSize);
@@ -137,14 +169,14 @@ void doDir(int fd, fat32Head* h, int curDirClus) {
 		free(cluster[dirEntryNum]);
 		free(dir);
 	}
-	uint32_t FATContent = getFATEntryForClusterN(fd, 5, h);
+	uint32_t FATContent = getFATEntryForClusterN(fd, curDirClus, h);
 	/* Check if FAT entry of this cluster contains EOC */
-	if(FATContent > 0x0FFFFFF8) {
+	if(FATContent > END_OF_CLUSTER) {
 		/* EOC = TRUE */
 	}
 	else {
 		/* Recursively call doDir with the next cluster # */
-		printf("FATContent: %X\n", FATContent);
+		//printf("FATContent: %X\n", FATContent);
 		doDir(fd, h, (int)FATContent);
 	}
 }
@@ -184,15 +216,23 @@ uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
         	perror("Seek failed.\n");
     	}
 		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		if(cluster[dirEntryNum] == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
 		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
 		if(readd == -1) {
         	perror("Read failed.\n");
     	}
 		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		if(dir == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
 		memcpy(dir, cluster[dirEntryNum], sizeof(fat32Dir)); // Forgive me, I didn't use casting
 
 		if(dir->DIR_Attr == 0x10) {
-			char nameNoSpace[12];
+			char nameNoSpace[DIR_NAME_LENGTH+1];
 			int i;
 			int j = 0;
 
@@ -253,23 +293,31 @@ void doDownload(int fd, fat32Head* h, int curDirClus, char *buffer) {
         	perror("Seek failed.\n");
     	}
 		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		if(cluster[dirEntryNum] == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
 		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
 		if(readd == -1) {
         	perror("Read failed.\n");
     	}
 		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		if(dir == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
 		memcpy(dir, cluster[dirEntryNum], sizeof(fat32Dir)); // Forgive me, I didn't use casting
 
 		/* If the entry represents a file */
 		/* If we got an archieve, append dot to its name */
-		if(dir->DIR_Attr == 0x20) {
+		if(dir->DIR_Attr == ATTR_ARCHIEVE) {
 			int nameIndex = 0;
 			while(dir->DIR_Name[nameIndex] != ' ') {
 				nameIndex++;
 			}
 			dir->DIR_Name[nameIndex] = '.';
 
-			char nameNoSpace[12];
+			char nameNoSpace[DIR_NAME_LENGTH+1];
 			int i;
 			int j = 0;
 
@@ -296,13 +344,17 @@ void doDownload(int fd, fat32Head* h, int curDirClus, char *buffer) {
 		/* Read each cluster until EOC */
 		uint32_t totalBytes = 0; //DIR_FileSize
 		uint32_t sector = findFirstDataSectorOfClusterN(h, nextClus, FirstDataSector);
-		while(getFATEntryForClusterN(fd, nextClus, h) != 0x0FFFFFFF) {
+		while(getFATEntryForClusterN(fd, nextClus, h) != END_OF_CLUSTER_CHAIN) {
 			totalBytes += h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus;
 			nextClus = getFATEntryForClusterN(fd, nextClus, h);
 		}
 		/* This operation adds the last cluster size to the totalBytes */
 		totalBytes += h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus;
 		char* buffer = malloc(totalBytes);
+		if(buffer == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", totalBytes);
+			abort();
+    	}
 		/* Seek to the first sector of the first cluster the file begins with */
 		int seek = lseek(fd, sector*h->bs->BPB_BytesPerSec, SEEK_SET);
 		if(seek == -1) {
@@ -378,7 +430,7 @@ void shellLoop(int fd)
 
 	/* Step 4: Load FSI and check its signature entries */
 	loadFSI(fd, h);
-	if(h->fsi->FSI_LeadSig == 0x41615252 && h->fsi->FSI_StrucSig == 0x61417272 && h->fsi->FSI_TrailSig == 0xAA550000) {
+	if(h->fsi->FSI_LeadSig == FSInfo_LeadSig && h->fsi->FSI_StrucSig == FSInfo_StrucSig && h->fsi->FSI_TrailSig == FSInfo_TrailSig) {
 		/* Check if all FSInfo's signatures are correct. */
 	}
 	else {

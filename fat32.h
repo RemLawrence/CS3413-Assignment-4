@@ -1,3 +1,10 @@
+/* This header file stores all types of the FAT32 structs
+* Including: Bios parameter block (BPB) Structure, FSInfo Sector Structure, and
+* Directory Entry Structure.
+* And also a header including them.
+* Author: Micah Hanmin Wang #3631308
+*/
+
 #ifndef FAT32_H
 #define FAT32_H
 
@@ -90,10 +97,9 @@ typedef struct dir_struct fat32Dir;
 #pragma pack(push)
 #pragma pack(1)
 struct fat32Head {
-	//TODO
 	fat32BS *bs;
 	FSI *fsi;
-	fat32Dir *dir;
+	fat32Dir *dir; // The ROOT DIR entry, specifically
 };
 #pragma pack(pop)
 typedef struct fat32Head fat32Head;

@@ -1,3 +1,10 @@
+/* fat32.c includes all the functions that creates/loads 
+* FAT32 structures into the memory.
+* Also the helper functions to calculate between 
+* the position of FAT and cluster N.
+* Author: Micah Hanmin Wang #3631308
+*/
+
 #define _FILE_OFFSET_BITS 64
 
 #include "fat32.h"
@@ -7,13 +14,29 @@
 #include <string.h>
 #include <stdbool.h>
 
+#define BYTE_PER_FAT_ENTRY 4
+#define FAT_FIRST_ENTRY 0x0FFFFFF8 
+#define FAT_SECOND_ENTRY 0xFFFFFFFF
+
 unsigned char *buffer;
 
 /* Initialize FAT32's head struct, load in BPB */
 fat32Head* createHead(int fd) {
     buffer = malloc(BUFFER_SIZE);
+    if(buffer == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BUFFER_SIZE);
+        abort();
+    }
     fat32Head* h = (fat32Head*)(malloc(sizeof(fat32Head)));
+    if(h == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Head));
+        abort();
+    }
     fat32BS *bs = (fat32BS*)(malloc(sizeof(fat32BS)));
+    if(bs == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32BS));
+        abort();
+    }
     
     // Read first 512 bytes -> boot sector
     int bs_count = read(fd, buffer, sizeof(fat32BS));
@@ -40,23 +63,32 @@ bool checkFATSig(int fd, fat32Head *h) {
     if(seek == -1) {
         perror("Seek failed.\n");
     }
-    uint32_t *FAT1 = malloc(4);
+    uint32_t *FAT1 = malloc(BYTE_PER_FAT_ENTRY);
+    if(FAT1 == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BYTE_PER_FAT_ENTRY);
+        abort();
+    }
+    
     /* Read the signature in first FAT entry */
-    int readd = read(fd, FAT1, 4);
+    int readd = read(fd, FAT1, BYTE_PER_FAT_ENTRY);
     if(readd == -1) {
         perror("Read failed.\n");
     }
-    uint32_t *FAT2 = malloc(4);
-    seek = lseek(fd, h->bs->BPB_RsvdSecCnt*h->bs->BPB_BytesPerSec+4, SEEK_SET);
+    uint32_t *FAT2 = malloc(BYTE_PER_FAT_ENTRY);
+    if(FAT2 == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BYTE_PER_FAT_ENTRY);
+        abort();
+    }
+    seek = lseek(fd, h->bs->BPB_RsvdSecCnt*h->bs->BPB_BytesPerSec+BYTE_PER_FAT_ENTRY, SEEK_SET);
     if(seek == -1) {
         perror("Seek failed.\n");
     }
     /* Read the signature in second FAT entry */
-    readd = read(fd, FAT2, 4);
+    readd = read(fd, FAT2, BYTE_PER_FAT_ENTRY);
     if(readd == -1) {
         perror("Read failed.\n");
     }
-    if(FAT1[0] == 0x0FFFFFF8 && FAT2[0] == 0xFFFFFFFF) {
+    if(FAT1[0] == FAT_FIRST_ENTRY && FAT2[0] == FAT_SECOND_ENTRY) {
         free(FAT1);
         free(FAT2);
         return 1;
@@ -72,6 +104,10 @@ bool checkFATSig(int fd, fat32Head *h) {
     aka. Sector 1 in Reserved Area */
 void loadFSI(int fd, fat32Head* h) {
     FSI *fsi = (FSI*)(malloc(sizeof(FSI)));
+    if(fsi == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(FSI));
+        abort();
+    }
     /* Skipping 512 Byte (Sector 0 aka BPB) */
     int seek = lseek(fd, h->bs->BPB_FSInfo*h->bs->BPB_BytesPerSec, SEEK_SET);
     if(seek == -1) {
@@ -94,6 +130,10 @@ void loadRootDir(int fd, fat32Head* h, int FirstDataSector) {
         perror("Seek failed.\n");
     }
     fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+    if(dir == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+        abort();
+    }
     int readd = read(fd, buffer, sizeof(fat32Dir));
     if(readd == -1) {
         perror("Read failed.\n");
@@ -116,13 +156,17 @@ int findFirstDataSectorOfClusterN(fat32Head* h, int N, int FirstDataSector) {
     where in the FAT32(s) is the entry for that cluster number? */
 uint32_t getFATEntryForClusterN(int fd, int N, fat32Head* h) {
     int FATPosition = h->bs->BPB_RsvdSecCnt;
-    int FATOffset = N*4;
-    uint32_t *FAT = malloc(4);
+    int FATOffset = N*BYTE_PER_FAT_ENTRY;
+    uint32_t *FAT = malloc(BYTE_PER_FAT_ENTRY);
+    if(FAT == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BYTE_PER_FAT_ENTRY);
+        abort();
+    }
     int seek = lseek(fd, FATPosition*h->bs->BPB_BytesPerSec+FATOffset, SEEK_SET);
     if(seek == -1) {
         perror("Seek failed.\n");
     }
-    int readd = read(fd, FAT, 4);
+    int readd = read(fd, FAT, BYTE_PER_FAT_ENTRY);
     if(readd == -1) {
         perror("Read failed.\n");
     }

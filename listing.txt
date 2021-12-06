@@ -1,0 +1,839 @@
+/* fat32.c includes all the functions that creates/loads 
+* FAT32 structures into the memory.
+* Also the helper functions to calculate between 
+* the position of FAT and cluster N.
+* Author: Micah Hanmin Wang #3631308
+*/
+
+#define _FILE_OFFSET_BITS 64
+
+#include "fat32.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdbool.h>
+
+#define BYTE_PER_FAT_ENTRY 4
+#define FAT_FIRST_ENTRY 0x0FFFFFF8 
+#define FAT_SECOND_ENTRY 0xFFFFFFFF
+
+unsigned char *buffer;
+
+/* Initialize FAT32's head struct, load in BPB */
+fat32Head* createHead(int fd) {
+    buffer = malloc(BUFFER_SIZE);
+    if(buffer == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BUFFER_SIZE);
+        abort();
+    }
+    fat32Head* h = (fat32Head*)(malloc(sizeof(fat32Head)));
+    if(h == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Head));
+        abort();
+    }
+    fat32BS *bs = (fat32BS*)(malloc(sizeof(fat32BS)));
+    if(bs == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32BS));
+        abort();
+    }
+    
+    // Read first 512 bytes -> boot sector
+    int bs_count = read(fd, buffer, sizeof(fat32BS));
+    if (!bs_count) {
+        printf("Error (%d) - Boot Sector \n", bs_count);
+        return NULL;
+    }
+    memcpy(bs, buffer, sizeof(fat32BS));
+    h->bs = bs;
+
+    return h;
+}
+
+/* Return the total cluster number in the volume */
+int checkIfFAT32(fat32Head* h) {
+    int TotalDataSec = h->bs->BPB_TotSec32 - (h->bs->BPB_RsvdSecCnt + (h->bs->BPB_NumFATs*h->bs->BPB_FATSz32)+0);
+    return TotalDataSec/h->bs->BPB_SecPerClus; // CountofClusters
+} 
+
+/* Check the first two entries of FAT, which stores signatures */
+bool checkFATSig(int fd, fat32Head *h) {
+    /* Get to FAT position */
+    int seek = lseek(fd, h->bs->BPB_RsvdSecCnt*h->bs->BPB_BytesPerSec, SEEK_SET);
+    if(seek == -1) {
+        perror("Seek failed.\n");
+    }
+    uint32_t *FAT1 = malloc(BYTE_PER_FAT_ENTRY);
+    if(FAT1 == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BYTE_PER_FAT_ENTRY);
+        abort();
+    }
+    
+    /* Read the signature in first FAT entry */
+    int readd = read(fd, FAT1, BYTE_PER_FAT_ENTRY);
+    if(readd == -1) {
+        perror("Read failed.\n");
+    }
+    uint32_t *FAT2 = malloc(BYTE_PER_FAT_ENTRY);
+    if(FAT2 == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BYTE_PER_FAT_ENTRY);
+        abort();
+    }
+    seek = lseek(fd, h->bs->BPB_RsvdSecCnt*h->bs->BPB_BytesPerSec+BYTE_PER_FAT_ENTRY, SEEK_SET);
+    if(seek == -1) {
+        perror("Seek failed.\n");
+    }
+    /* Read the signature in second FAT entry */
+    readd = read(fd, FAT2, BYTE_PER_FAT_ENTRY);
+    if(readd == -1) {
+        perror("Read failed.\n");
+    }
+    if(FAT1[0] == FAT_FIRST_ENTRY && FAT2[0] == FAT_SECOND_ENTRY) {
+        free(FAT1);
+        free(FAT2);
+        return 1;
+    }
+    else {
+        free(FAT1);
+        free(FAT2);
+        return 0;
+    }
+}
+
+/* Given a file descriptor and a FAT32 header, load up FSInfo Secctor 
+    aka. Sector 1 in Reserved Area */
+void loadFSI(int fd, fat32Head* h) {
+    FSI *fsi = (FSI*)(malloc(sizeof(FSI)));
+    if(fsi == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(FSI));
+        abort();
+    }
+    /* Skipping 512 Byte (Sector 0 aka BPB) */
+    int seek = lseek(fd, h->bs->BPB_FSInfo*h->bs->BPB_BytesPerSec, SEEK_SET);
+    if(seek == -1) {
+        perror("Seek failed.\n");
+    }
+    int readd = read(fd, buffer, h->bs->BPB_BytesPerSec*1);
+    if(readd == -1) {
+        perror("Read failed.\n");
+    }
+    memcpy(fsi, buffer, sizeof(FSI));
+    h->fsi = fsi;
+}
+
+/* Load in the root directory struct into the head,
+    from the first sector of Cluster 2 */
+void loadRootDir(int fd, fat32Head* h, int FirstDataSector) {
+    // First, skip reserved area + 2*FAT in bytes
+    int seek = lseek(fd, FirstDataSector*h->bs->BPB_BytesPerSec, SEEK_SET);
+    if(seek == -1) {
+        perror("Seek failed.\n");
+    }
+    fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+    if(dir == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+        abort();
+    }
+    int readd = read(fd, buffer, sizeof(fat32Dir));
+    if(readd == -1) {
+        perror("Read failed.\n");
+    }
+    memcpy(dir, buffer,  sizeof(fat32Dir));
+    h->dir = dir;
+}
+
+
+
+/*****************************HELPER FUNCTIONS**********************************/
+
+/* return the sector # of cluster N */
+int findFirstDataSectorOfClusterN(fat32Head* h, int N, int FirstDataSector) {
+    //printf("%d", FirstDataSector + (N-2)*h->bs->BPB_SecPerClus);
+    return FirstDataSector + (N-2)*h->bs->BPB_SecPerClus;
+}
+
+/*  A helper function that given a valid cluster number, 
+    where in the FAT32(s) is the entry for that cluster number? */
+uint32_t getFATEntryForClusterN(int fd, int N, fat32Head* h) {
+    int FATPosition = h->bs->BPB_RsvdSecCnt;
+    int FATOffset = N*BYTE_PER_FAT_ENTRY;
+    uint32_t *FAT = malloc(BYTE_PER_FAT_ENTRY);
+    if(FAT == NULL) {
+        fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", BYTE_PER_FAT_ENTRY);
+        abort();
+    }
+    int seek = lseek(fd, FATPosition*h->bs->BPB_BytesPerSec+FATOffset, SEEK_SET);
+    if(seek == -1) {
+        perror("Seek failed.\n");
+    }
+    int readd = read(fd, FAT, BYTE_PER_FAT_ENTRY);
+    if(readd == -1) {
+        perror("Read failed.\n");
+    }
+    //int ThisFATSecNum = h->bs->BPB_RsvdSecCnt + (FATOffset/h->bs->BPB_BytesPerSec);
+    // TODO
+    return FAT[0];
+}
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include "shell.h"
+
+int main(int argc, char *argv[]) 
+{
+	int fd;
+	if (argc != 2) 
+	{
+		printf("Usage: %s <file>\n", argv[0]);
+		exit(1);
+	}
+
+	char *file = argv[1];
+ 	fd = open(file, O_RDWR);
+	if (-1 == fd) 
+	{
+		perror("opening file: ");
+		exit(1);
+	}
+
+	shellLoop(fd);
+
+	close(fd);
+}
+/* The shell for reading FAT32 Disk Volume.
+* Commands provided:
+* INFO: Display the stats of the disk image you're reading
+* DIR: Display the info of the current folder you're at. 
+* CD: Goes into a new directory if that directory exists.
+* GET: Get a specific file from the current directory to your local directory.
+* Press Ctrl+D to exit.
+* Author: Micah Hanmin Wang #3631308
+*/
+
+#define _FILE_OFFSET_BITS 64
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "shell.h"
+#include "fat32.h"
+#include <stdbool.h>
+#include <inttypes.h>
+
+#define BUF_SIZE 256
+#define CMD_INFO "INFO"
+#define CMD_DIR "DIR"
+#define CMD_CD "CD"
+#define CMD_GET "GET"
+#define CMD_PUT "PUT"
+
+#define BYTE_TO_MB 1000000
+#define MB_TO_GB 1000
+
+#define BPB_END_SIG1 0x55
+#define BPB_END_SIG2 0xAA
+#define FIXED_MEDIA 0xF8
+#define NOT_FIXED_MEDIA 0xF0
+#define ATTR_VOLUME_ID 0x08
+#define ATTR_DIRECTORY 0x10
+#define ATTR_ARCHIEVE 0x20
+#define END_OF_CLUSTER 0x0FFFFFF8
+#define END_OF_CLUSTER_CHAIN 0x0FFFFFFF
+#define FSInfo_LeadSig 0x41615252
+#define FSInfo_StrucSig 0x61417272
+#define FSInfo_TrailSig 0xAA550000
+#define DIR_NAME_LENGTH 11
+
+void cleanupHead(fat32Head *h);
+
+void printInfo(fat32Head* h) {
+	// Check if both Sz16 fields are equal to 0
+	if(h->bs->BPB_FATSz16 == 0 && h->bs-> BPB_TotSec16 == 0) {
+		// Then check the two signature bytes (0x55 0xAA), this tells you if you load it correctly.
+		if(h->bs->BS_SigA == BPB_END_SIG1 && h->bs->BS_SigB == BPB_END_SIG2) {
+			printf("---- Device Info ----\n");
+			printf("OEM Name: %s\n", h->bs->BS_OEMName);
+			printf("Label: %*.*s\n", BS_VolLab_LENGTH, BS_VolLab_LENGTH, h->bs->BS_VolLab);
+			printf("File System Type: %*.*s\n", BS_FilSysType_LENGTH, BS_FilSysType_LENGTH, h->bs->BS_FilSysType);
+			printf("Media Type: 0x%X ", h->bs->BPB_Media);
+			if(h->bs->BPB_Media == FIXED_MEDIA) {
+				printf("(fixed)\n");
+			}
+			else if(h->bs->BPB_Media == NOT_FIXED_MEDIA) {
+				printf("not fixed\n");
+			}
+			else {
+				printf("\n");
+			}
+			unsigned long total_byte = (long)h->bs->BPB_BytesPerSec*(long)h->bs->BPB_TotSec32;
+			double total_mb = (double)total_byte/BYTE_TO_MB;
+			double total_gb = total_mb/MB_TO_GB;
+			printf("Size: %lu (%dMB, %.3fGB)\n", total_byte, (int)total_mb, total_gb);
+			printf("Drive Number: %d (hard disk)\n\n", h->bs->BS_DrvNum);
+
+			printf("--- Geometry ---\n");
+			printf("Bytes per Sector: %d\n", h->bs->BPB_BytesPerSec);
+			printf("Sectors per Cluster: %d\n", h->bs->BPB_SecPerClus);
+			printf("Total Sectors: %d\n", h->bs->BPB_TotSec32);
+			printf("Geom: Sectors per Track: %d\n", h->bs->BPB_SecPerTrk);
+			printf("Geom: Heads: %d\n", h->bs->BPB_NumHeads);
+			printf("Hidden Sectors: %d\n\n", h->bs->BPB_HiddSec);
+
+			printf("--- FS Info ---\n");
+			printf("Volume ID: %s\n", h->dir->DIR_Name);
+			printf("Version: %d:%d\n", h->bs->BPB_FSVerLow, h->bs->BPB_FSVerLow);
+			printf("Reserved Sectors: %d\n", h->bs->BPB_RsvdSecCnt);
+			printf("Number of FATs: %d\n", h->bs->BPB_NumFATs);
+			printf("FAT Size: %d\n", h->bs->BPB_FATSz32);
+			printf("Mirrored FAT: %d ", h->bs->BPB_ExtFlags);
+			if(h->bs->BPB_ExtFlags == 0){
+				printf("(yes)\n");
+			}
+			else {
+				printf("\n");
+			}
+			printf("Boot Sector Backup Sector No: %d\n", h->bs->BPB_BkBootSec);
+		}
+	}
+	else {
+		printf("Disk does not have FAT32\n");
+	}
+}
+
+void doDir(int fd, fat32Head* h, int curDirClus) {
+	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs * h->bs->BPB_FATSz32; // 1922+15423*2=32768
+	int currentSector = findFirstDataSectorOfClusterN(h, curDirClus, FirstDataSector);
+
+	// cluster[4096/32] = cluster[128] = 128 dir entries to go through in each cluster
+	int dirEntryNum = h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus/sizeof(fat32Dir);
+	unsigned char *cluster[dirEntryNum];
+	int dirIndex = 0; //  0-127
+	// For each dir entry (32B) in the cluster (128 in total)
+	for(dirIndex = 0; dirIndex < dirEntryNum; dirIndex++) {
+		int seek = lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
+		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		if(cluster[dirEntryNum] == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
+		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		if(readd == -1) {
+        	perror("Read failed.\n");
+    	}
+		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		if(dir == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
+		memcpy(dir, cluster[dirEntryNum],  sizeof(fat32Dir)); // Forgive me, I didn't use casting
+
+		/* If we got an archieve, append dot to its name */
+		if(dir->DIR_Attr == ATTR_ARCHIEVE) {
+			int nameIndex = 0;
+			while(dir->DIR_Name[nameIndex] != ' ') {
+				nameIndex++;
+			}
+			dir->DIR_Name[nameIndex] = '.';
+		}
+
+		/* If we got a directory or an archieve, remove all spaces from its name and print its info */
+		if(dir->DIR_Attr == ATTR_DIRECTORY || dir->DIR_Attr == ATTR_ARCHIEVE) {
+			char nameNoSpace[DIR_NAME_LENGTH+1];
+			int i;
+			int j = 0;
+
+			for (i = 0; i < strlen(dir->DIR_Name); i++) {
+				if (dir->DIR_Name[i] != ' ') {
+					nameNoSpace[j] = dir->DIR_Name[i];
+					j++;
+				}
+			}
+			if(dir->DIR_Attr == ATTR_DIRECTORY) {
+				//dir
+				nameNoSpace[j-1] = '\0';
+				printf("<%s>\t\t%d\n", nameNoSpace, dir->DIR_FileSize);
+			}
+			else {
+				//archieve
+				nameNoSpace[j] = '\0';
+				printf("%s\t\t%d\n", nameNoSpace, dir->DIR_FileSize);
+			}
+		}
+
+		free(cluster[dirEntryNum]);
+		free(dir);
+	}
+	uint32_t FATContent = getFATEntryForClusterN(fd, curDirClus, h);
+	/* Check if FAT entry of this cluster contains EOC */
+	if(FATContent > END_OF_CLUSTER) {
+		/* EOC = TRUE */
+	}
+	else {
+		/* Recursively call doDir with the next cluster # */
+		//printf("FATContent: %X\n", FATContent);
+		doDir(fd, h, (int)FATContent);
+	}
+}
+
+uint32_t doCD(int fd, fat32Head *h, uint32_t curDirClus, char *buffer) {
+	/* Initialize folderName from buffer */
+	char folderName[BUF_SIZE];
+	int i = 0;
+	while(buffer[i] != ' ') {
+		i++;
+	}
+	int j = 0;
+	i++; // Skip that space
+	while(buffer[i] != '\0') {
+		folderName[j] = buffer[i];
+		i++;
+		j++;
+	}
+	folderName[j] = '\0';
+	
+	uint32_t updatedCluster = curDirClus;
+	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs * h->bs->BPB_FATSz32; // 1922+15423*2=32768
+	int currentSector = findFirstDataSectorOfClusterN(h, curDirClus, FirstDataSector);
+
+	if(curDirClus != 2 && strcmp(folderName, "..") == 0) {
+		return 2;
+	}
+
+	// cluster[4096/32] = cluster[128] = 128 dir entries to go through in each cluster
+	int dirEntryNum = h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus/sizeof(fat32Dir);
+	unsigned char *cluster[dirEntryNum];
+	int dirIndex = 0; //  0-127
+	// For each dir entry (32B) in the cluster (128 in total)
+	for(dirIndex = 0; dirIndex < dirEntryNum; dirIndex++) {
+		int seek = lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
+		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		if(cluster[dirEntryNum] == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
+		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		if(readd == -1) {
+        	perror("Read failed.\n");
+    	}
+		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		if(dir == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
+		memcpy(dir, cluster[dirEntryNum], sizeof(fat32Dir)); // Forgive me, I didn't use casting
+
+		if(dir->DIR_Attr == 0x10) {
+			char nameNoSpace[DIR_NAME_LENGTH+1];
+			int i;
+			int j = 0;
+
+			for (i = 0; i < strlen(dir->DIR_Name); i++) {
+				if (dir->DIR_Name[i] != ' ') {
+					nameNoSpace[j] = dir->DIR_Name[i];
+					j++;
+				}
+			}
+			nameNoSpace[j-1] = '\0';
+
+			/* folderName matches */
+			if(strcmp(nameNoSpace, folderName) == 0) {
+				updatedCluster = (dir->DIR_FstClusHI<<16) + dir->DIR_FstClusLO;
+				free(cluster[dirEntryNum]);
+				free(dir);
+				return updatedCluster;
+			}
+		}
+
+		free(cluster[dirEntryNum]);
+		free(dir);
+	}
+	printf("Error: folder not found\n");
+	return curDirClus;
+}
+
+void doDownload(int fd, fat32Head* h, int curDirClus, char *buffer) {
+	int nextClus = 0;
+	int fileSize = 0;
+	bool found = false;
+	/* Initialize folderName from buffer */
+	char fileName[BUF_SIZE];
+	int i = 0;
+	while(buffer[i] != ' ') {
+		i++;
+	}
+	int j = 0;
+	i++; // Skip that space
+	while(buffer[i] != '\0') {
+		fileName[j] = buffer[i];
+		i++;
+		j++;
+	}
+	fileName[j] = '\0';
+
+	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs *h->bs->BPB_FATSz32; // 1922+15423*2=32768
+	int currentSector = findFirstDataSectorOfClusterN(h, curDirClus, FirstDataSector);
+
+	// cluster[4096/32] = cluster[128] = 128 dir entries to go through in each cluster
+	int dirEntryNum = h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus/sizeof(fat32Dir);
+	unsigned char *cluster[dirEntryNum];
+	int dirIndex = 0; //  0-127
+	// For each dir entry (32B) in the cluster (128 in total)
+	for(dirIndex = 0; dirIndex < dirEntryNum; dirIndex++) {
+		int seek = lseek(fd, currentSector*h->bs->BPB_BytesPerSec + dirIndex*32, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
+		cluster[dirEntryNum] = malloc(sizeof(fat32Dir));
+		if(cluster[dirEntryNum] == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
+		int readd = read(fd, cluster[dirEntryNum], sizeof(fat32Dir));
+		if(readd == -1) {
+        	perror("Read failed.\n");
+    	}
+		fat32Dir *dir = (fat32Dir*)(malloc(sizeof(fat32Dir)));
+		if(dir == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %lu bytes.\n", sizeof(fat32Dir));
+			abort();
+    	}
+		memcpy(dir, cluster[dirEntryNum], sizeof(fat32Dir)); // Forgive me, I didn't use casting
+
+		/* If the entry represents a file */
+		/* If we got an archieve, append dot to its name */
+		if(dir->DIR_Attr == ATTR_ARCHIEVE) {
+			int nameIndex = 0;
+			while(dir->DIR_Name[nameIndex] != ' ') {
+				nameIndex++;
+			}
+			dir->DIR_Name[nameIndex] = '.';
+
+			char nameNoSpace[DIR_NAME_LENGTH+1];
+			int i;
+			int j = 0;
+
+			for (i = 0; i < strlen(dir->DIR_Name); i++) {
+				if (dir->DIR_Name[i] != ' ') {
+					nameNoSpace[j] = dir->DIR_Name[i];
+					j++;
+				}
+			}
+			nameNoSpace[j] = '\0';
+			if(strcmp(nameNoSpace, fileName) == 0) {
+				nextClus = (dir->DIR_FstClusHI<<16) + dir->DIR_FstClusLO;
+				fileSize = dir->DIR_FileSize; // Store the fileSize here for later use (read & write!)
+				found = true;
+				break;
+			}
+		}
+		free(cluster[dirEntryNum]);
+		free(dir);
+	}
+
+	/* If the file name searched is found, then find all its clusters by reading the FAT entries */
+	if(found) {
+		/* Read each cluster until EOC */
+		uint32_t totalBytes = 0; //DIR_FileSize
+		uint32_t sector = findFirstDataSectorOfClusterN(h, nextClus, FirstDataSector);
+		while(getFATEntryForClusterN(fd, nextClus, h) != END_OF_CLUSTER_CHAIN) {
+			totalBytes += h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus;
+			nextClus = getFATEntryForClusterN(fd, nextClus, h);
+		}
+		/* This operation adds the last cluster size to the totalBytes */
+		totalBytes += h->bs->BPB_BytesPerSec*h->bs->BPB_SecPerClus;
+		char* buffer = malloc(totalBytes);
+		if(buffer == NULL) {
+			fprintf(stderr, "Fatal: failed to allocate %d bytes.\n", totalBytes);
+			abort();
+    	}
+		/* Seek to the first sector of the first cluster the file begins with */
+		int seek = lseek(fd, sector*h->bs->BPB_BytesPerSec, SEEK_SET);
+		if(seek == -1) {
+        	perror("Seek failed.\n");
+    	}
+		if(totalBytes >= fileSize) {
+			/* Bonus 2: Just 1 read! */
+			int readd = read(fd, buffer, fileSize);
+			if(readd == -1) {
+        		perror("Read failed.\n");
+    		}
+			int new_file = open(fileName, O_WRONLY | O_APPEND | O_CREAT | O_EXCL, 0777);
+			if(new_file < 0) {
+				printf("Failed to create file '%s'\n", fileName);
+			}
+			write(new_file, buffer, fileSize);
+			printf("Done.\n");
+		}
+		else {
+			printf("There's some error reading the file '%s'\n", fileName);
+		}
+		free(buffer);
+	}
+	else {
+		printf("Error: file not found\n");
+	}
+}
+
+void shellLoop(int fd) 
+{
+	int running = true;
+	uint32_t curDirClus;
+
+	// Step 1: Initialize fat32Head
+	fat32Head *h = createHead(fd);
+
+	if (h == NULL) {
+		running = false;
+	}
+	else {// valid, grab the root cluster
+		;//TODO
+		// Grab the root cluster
+		curDirClus = h->bs->BPB_RootClus; // 2
+	}
+	
+	char buffer[BUF_SIZE];
+	char bufferRaw[BUF_SIZE];
+	int CountofClusters; // Clusters in total
+	int FirstDataSector = h->bs->BPB_RsvdSecCnt + h->bs->BPB_NumFATs * h->bs->BPB_FATSz32; // 1922+15423*2=32768
+
+	/* Step 2: Check if the total count of clusters (start from Cluster 2) 
+		falls in the range of FAT32 */
+	CountofClusters = checkIfFAT32(h);
+	if(CountofClusters < FAT12_TOTAL_CLUSTERS) {
+		/* Volume is FAT12 */
+		printf("Volume is FAT12\n");
+		running = false;
+	}
+	else if (CountofClusters < FAT16_TOTAL_CLUSTERS) {
+		/* Volume is FAT16 */
+		printf("Volume is FAT16\n");
+		running = false;
+	}
+	else {
+		/* Volume is FAT32 */
+	}
+
+	/* Step 3: Check FAT signature */
+	if(!checkFATSig(fd, h)) {
+		printf("The FAT has incorrect signatures. Exiting now...\n");
+		running = false;
+	}
+
+	/* Step 4: Load FSI and check its signature entries */
+	loadFSI(fd, h);
+	if(h->fsi->FSI_LeadSig == FSInfo_LeadSig && h->fsi->FSI_StrucSig == FSInfo_StrucSig && h->fsi->FSI_TrailSig == FSInfo_TrailSig) {
+		/* Check if all FSInfo's signatures are correct. */
+	}
+	else {
+		printf("AT least one FSInfo signature is incorrect! Exiting...\n");
+		running = false;
+	}
+
+	/* Load the Root Dir struct located in Cluster 2, Sector 0. */
+	loadRootDir(fd, h, FirstDataSector);
+
+	while(running) 
+	{
+		printf(">");
+
+		if (fgets(bufferRaw, BUF_SIZE, stdin) == NULL) {
+			running = false;
+			continue;
+		}
+		bufferRaw[strlen(bufferRaw)-1] = '\0'; /* cut new line */
+		for (int i=0; i < strlen(bufferRaw)+1; i++) {
+			buffer[i] = toupper(bufferRaw[i]);
+		}
+		if (strncmp(buffer, CMD_INFO, strlen(CMD_INFO)) == 0) {
+			printInfo(h);
+		}
+		else if (strncmp(buffer, CMD_DIR, strlen(CMD_DIR)) == 0) {
+			// Starting sector after FAT
+			printf("\nDIRECTORY LISTING\n");
+			printf("VOL_ID: %s\n\n", h->dir->DIR_Name);
+			doDir(fd, h, curDirClus);
+			uint64_t bytesFree = (uint64_t)h->fsi->FSI_Free_Count*(uint64_t)h->bs->BPB_BytesPerSec*(uint64_t)h->bs->BPB_SecPerClus;
+			printf("---Bytes Free: %lu\n", bytesFree);
+			printf("---DONE\n");
+		}
+		else if (strncmp(buffer, CMD_CD, strlen(CMD_CD)) == 0) {
+			if(strcmp(buffer, "CD") == 0){
+				printf("Error: folder not found\n");
+			}
+			else if (strcmp(buffer, "CD ") == 0) {
+				printf("Error: folder not found\n");
+			}
+			else {
+				curDirClus = doCD(fd, h, curDirClus, buffer);
+			}
+		}
+		else if (strncmp(buffer, CMD_GET, strlen(CMD_GET)) == 0) {
+			printf("\n");
+			if(strcmp(buffer, "GET") == 0) {
+				printf("Error: file not found\n");
+			}
+			else if (strcmp(buffer, "GET ") == 0) {
+				printf("Error: file not found\n");
+			}
+			else {
+				doDownload(fd, h, curDirClus, buffer);
+			}
+		}
+		else if (strncmp(buffer, CMD_PUT, strlen(CMD_PUT)) == 0) {
+			//doUpload(h, curDirClus, buffer, bufferRaw);
+			printf("Bonus marks!\n");
+		}
+		else {
+			printf("\nCommand not found\n");
+		}
+	}
+	printf("\nExited...\n");
+	
+	cleanupHead(h);
+}
+
+void cleanupHead(fat32Head *h) {
+	free(h->bs);
+	free(h);
+}
+/* This header file stores all types of the FAT32 structs
+* Including: Bios parameter block (BPB) Structure, FSInfo Sector Structure, and
+* Directory Entry Structure.
+* And also a header including them.
+* Author: Micah Hanmin Wang #3631308
+*/
+
+#ifndef FAT32_H
+#define FAT32_H
+
+#include <inttypes.h>
+#include <stdbool.h>
+
+/* boot sector constants */
+#define BS_OEMName_LENGTH 8
+#define BS_VolLab_LENGTH 11
+#define BS_FilSysType_LENGTH 8 
+
+#define BUFFER_SIZE 512
+
+#pragma pack(push)
+#pragma pack(1)
+struct fat32BS_struct {
+	char BS_jmpBoot[3];
+	char BS_OEMName[BS_OEMName_LENGTH];
+	uint16_t BPB_BytesPerSec;
+	uint8_t BPB_SecPerClus;
+	uint16_t BPB_RsvdSecCnt;
+	uint8_t BPB_NumFATs;
+	uint16_t BPB_RootEntCnt;
+	uint16_t BPB_TotSec16;
+	uint8_t BPB_Media;
+	uint16_t BPB_FATSz16;
+	uint16_t BPB_SecPerTrk;
+	uint16_t BPB_NumHeads;
+	uint32_t BPB_HiddSec;
+	uint32_t BPB_TotSec32;
+
+	uint32_t BPB_FATSz32;
+	uint16_t BPB_ExtFlags;
+	uint8_t BPB_FSVerLow;
+	uint8_t BPB_FSVerHigh;
+	uint32_t BPB_RootClus;
+	uint16_t BPB_FSInfo;
+	uint16_t BPB_BkBootSec;
+	char BPB_reserved[12];
+	uint8_t BS_DrvNum;
+	uint8_t BS_Reserved1;
+	uint8_t BS_BootSig;
+	uint32_t BS_VolID;
+	char BS_VolLab[BS_VolLab_LENGTH];
+	char BS_FilSysType[BS_FilSysType_LENGTH];
+	
+	char BS_CodeReserved[420];
+	uint8_t BS_SigA;
+	uint8_t BS_SigB;
+};
+#pragma pack(pop)
+typedef struct fat32BS_struct fat32BS;
+
+#pragma pack(push)
+#pragma pack(1)
+struct fsi_struct {
+	uint32_t FSI_LeadSig;
+	char FSI_Reserved1[480];
+	uint32_t FSI_StrucSig;
+	uint32_t FSI_Free_Count;
+	uint32_t FSI_Nxt_Free;
+	char FSI_Reserved2[12];
+	uint32_t FSI_TrailSig;
+};
+#pragma pack(pop)
+typedef struct fsi_struct FSI;
+
+#pragma pack(push)
+#pragma pack(1)
+struct dir_struct {
+	char DIR_Name[11];
+	uint8_t DIR_Attr;
+	uint8_t DIR_NTRes;
+	uint8_t DIR_CrtTimeTenth;
+	uint16_t DIR_CrtTime;
+	uint16_t DIR_CrtDate;
+	uint16_t DIR_LstAccDate;
+	uint16_t DIR_FstClusHI;
+	uint16_t DIR_WrtTime;
+	uint16_t DIR_WrtDate;
+	uint16_t DIR_FstClusLO;
+    uint32_t DIR_FileSize;
+};
+#pragma pack(pop)
+typedef struct dir_struct fat32Dir;
+
+
+
+
+#pragma pack(push)
+#pragma pack(1)
+struct fat32Head {
+	fat32BS *bs;
+	FSI *fsi;
+	fat32Dir *dir; // The ROOT DIR entry, specifically
+};
+#pragma pack(pop)
+typedef struct fat32Head fat32Head;
+
+
+fat32Head *createHead(int fd);
+int checkIfFAT32(fat32Head* h);
+void loadFSI(int fd, fat32Head* h);
+void loadRootDir(int fd, fat32Head* h, int FirstDataSector);
+int findFirstDataSectorOfClusterN(fat32Head* h, int N, int FirstDataSector);
+uint32_t getFATEntryForClusterN(int fd, int N, fat32Head* h);
+bool checkFATSig(int fd, fat32Head *h);
+
+#endif
+#ifndef SHELL_H
+#define SHELL_H
+
+#define FAT12_TOTAL_CLUSTERS 4085
+#define FAT16_TOTAL_CLUSTERS 65525
+
+void shellLoop(int fd);
+
+#endif
